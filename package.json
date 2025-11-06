@@ -1,0 +1,12 @@
+{
+  "name": "esp32-websocket-server",
+  "version": "1.0.0",
+  "description": "WebSocket server za ESP32 projekat",
+  "main": "websocket_server.js",
+  "scripts": {
+    "start": "node websocket_server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
