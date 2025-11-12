@@ -1,33 +1,76 @@
-// websocket_server.js (Node.js)
+// websocket_server.js
+const http = require('http');
 const WebSocket = require('ws');
 
-// Koristi Render-ov port iz okruženja, ili 3000 lokalno za razvoj
-const PORT = process.env.PORT || 3000;
-const wss = new WebSocket.Server({ port: PORT }, () => {
-  console.log(`✅ WebSocket server pokrenut na portu ${PORT}`);
+// HTML koji prikazuje stanje tastera
+const htmlPage = `
+<!DOCTYPE html>
+<html lang="sr">
+<head>
+  <meta charset="UTF-8">
+  <title>ESP32 Taster</title>
+  <style>
+    body { font-family: sans-serif; text-align: center; margin-top: 50px; }
+    h1 { font-size: 28px; }
+    #status { font-size: 48px; font-weight: bold; margin-top: 20px; }
+    .on  { color: green; }
+    .off { color: red; }
+  </style>
+</head>
+<body>
+  <h1>Stanje tastera na ESP32</h1>
+  <div id="status" class="off">OFF</div>
+  <script>
+    const ws = new WebSocket(location.origin.replace(/^http/, 'ws'));
+    ws.onmessage = (event) => {
+      const msg = event.data.trim();
+      const statusDiv = document.getElementById("status");
+      if (msg === "ON") {
+        statusDiv.textContent = "ON";
+        statusDiv.className = "on";
+      } else if (msg === "OFF") {
+        statusDiv.textContent = "OFF";
+        statusDiv.className = "off";
+      }
+    };
+  </script>
+</body>
+</html>
+`;
+
+// HTTP server koji isporučuje HTML
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+  res.end(htmlPage);
 });
 
-// Event handler za novu konekciju
+// WebSocket server
+const PORT = process.env.PORT || 3000;
+const wss = new WebSocket.Server({ server });
+
 wss.on('connection', (ws, req) => {
-  console.log('👋 Novi WebSocket klijent povezan:', req.socket.remoteAddress);
-  
-  // Po želji: podešavanje periodičnog pingovanja ili slično radi održavanja veze
-  ws.on('pong', () => {/* heartbeat potvrda, ako implementirate ping-pong */});
-  
-  // Prijem poruke od klijenta
+  console.log('📡 Novi klijent povezan:', req.socket.remoteAddress);
+
   ws.on('message', (message) => {
-    console.log('📨 Primljena poruka:', message.toString());
-    // Primer: odgovor istu poruku nazad klijentu (echo)
-    ws.send(`🤖 Server echo: ${message}`);
+    console.log('📥 Poruka primljena:', message.toString());
+    // Prosleđujemo svim ostalim klijentima (npr. browser)
+    wss.clients.forEach((client) => {
+      if (client !== ws && client.readyState === WebSocket.OPEN) {
+        client.send(message.toString());
+      }
+    });
   });
-  
-  // Obrada zatvaranja konekcije
+
   ws.on('close', () => {
-    console.log('🔌 Klijent je zatvorio vezu.');
+    console.log('🔌 Klijent se odjavio');
   });
-  
-  // Obrada grešaka na konekciji
+
   ws.on('error', (err) => {
     console.error('⚠️ Greška na WS konekciji:', err);
   });
+});
+
+// Pokretanje servera
+server.listen(PORT, () => {
+  console.log(`✅ WebSocket server pokrenut na portu ${PORT}`);
 });
