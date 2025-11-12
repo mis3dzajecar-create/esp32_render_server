@@ -1,68 +1,33 @@
-const http = require('http');
+// websocket_server.js (Node.js)
 const WebSocket = require('ws');
 
-// --- HTML koji se prikazuje u browseru ---
-const htmlPage = `
-<!DOCTYPE html>
-<html lang="sr">
-<head>
-<meta charset="UTF-8">
-<title>ESP32 Taster</title>
-<style>
-  body { font-family: Arial; text-align:center; margin-top:60px; }
-  #status { font-size:48px; font-weight:bold; }
-  .on  { color:green; }
-  .off { color:red; }
-</style>
-</head>
-<body>
-  <h1>ESP32 WebSocket prikaz tastera</h1>
-  <div id="status" class="off">OFF</div>
-  <script>
-    const ws = new WebSocket(location.origin.replace(/^http/, 'ws'));
-    ws.onmessage = (event) => {
-      const msg = event.data.trim();
-      const status = document.getElementById('status');
-      if (msg === "ON") { status.textContent = "ON"; status.className = "on"; }
-      else if (msg === "OFF") { status.textContent = "OFF"; status.className = "off"; }
-    };
-  </script>
-</body>
-</html>
-`;
-
-// --- HTTP server ---
-const server = http.createServer((req, res) => {
-  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-  res.end(htmlPage);
+// Koristi Render-ov port iz okruženja, ili 3000 lokalno za razvoj
+const PORT = process.env.PORT || 3000;
+const wss = new WebSocket.Server({ port: PORT }, () => {
+  console.log(`✅ WebSocket server pokrenut na portu ${PORT}`);
 });
 
-// --- WebSocket server ---
-const wss = new WebSocket.Server({ server });
-let esp32Socket = null;
-
+// Event handler za novu konekciju
 wss.on('connection', (ws, req) => {
-  console.log('📡 Novi klijent povezan');
-
+  console.log('👋 Novi WebSocket klijent povezan:', req.socket.remoteAddress);
+  
+  // Po želji: podešavanje periodičnog pingovanja ili slično radi održavanja veze
+  ws.on('pong', () => {/* heartbeat potvrda, ako implementirate ping-pong */});
+  
+  // Prijem poruke od klijenta
   ws.on('message', (message) => {
-    console.log('📥 Poruka primljena:', message.toString());
-    // Ako je ovo ESP32 (šalje ON/OFF), zapamti ga
-    if (message.toString() === 'ON' || message.toString() === 'OFF') {
-      esp32Socket = ws;
-      // Prosledi svim klijentima (browserima)
-      wss.clients.forEach((client) => {
-        if (client !== ws && client.readyState === WebSocket.OPEN) {
-          client.send(message.toString());
-        }
-      });
-    }
+    console.log('📨 Primljena poruka:', message.toString());
+    // Primer: odgovor istu poruku nazad klijentu (echo)
+    ws.send(`🤖 Server echo: ${message}`);
   });
-
-  ws.on('close', () => console.log('❌ Klijent se odjavio'));
+  
+  // Obrada zatvaranja konekcije
+  ws.on('close', () => {
+    console.log('🔌 Klijent je zatvorio vezu.');
+  });
+  
+  // Obrada grešaka na konekciji
+  ws.on('error', (err) => {
+    console.error('⚠️ Greška na WS konekciji:', err);
+  });
 });
-
-// --- Port od Render-a ---
-const PORT = process.env.PORT || 10000;
-server.listen(PORT, '0.0.0.0', () =>
-  console.log(`🌐 WebSocket server pokrenut na portu ${PORT}`)
-);

@@ -7,6 +7,19 @@
     "start": "node websocket_server.js"
   },
   "dependencies": {
-    "ws": "^8.18.0"
-  }
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {},
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mis3dzajecar-create/esp32_render_server.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/mis3dzajecar-create/esp32_render_server/issues"
+  },
+  "homepage": "https://github.com/mis3dzajecar-create/esp32_render_server#readme"
 }
