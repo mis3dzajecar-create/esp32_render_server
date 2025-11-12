@@ -7,7 +7,11 @@
     "start": "node websocket_server.js"
   },
   "dependencies": {
+<<<<<<< HEAD
     "ws": "^8.18.3"
+=======
+    "ws": "^8.18.0"
+>>>>>>> bc1eba3 (Update websocket server logic)
   },
   "devDependencies": {},
   "repository": {
