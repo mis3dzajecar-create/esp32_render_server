@@ -1,4 +1,4 @@
-// websocket_server.js
+// websocket_server.js — kompatibilan sa ESP32 WSS konekcijom
 const http = require('http');
 const WebSocket = require('ws');
 
@@ -44,8 +44,8 @@ const server = http.createServer((req, res) => {
   res.end(htmlPage);
 });
 
-// WebSocket server
-const PORT = process.env.PORT || 3000;
+// WebSocket server na Render proxy portu (443 preko wss)
+const PORT = process.env.PORT || 10000;
 const wss = new WebSocket.Server({ server });
 
 wss.on('connection', (ws, req) => {
@@ -70,7 +70,6 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-// Pokretanje servera
 server.listen(PORT, () => {
   console.log(`✅ WebSocket server pokrenut na portu ${PORT}`);
 });
