@@ -21,7 +21,7 @@ const htmlPage = `
   <h1>Stanje tastera na ESP32</h1>
   <div id="status" class="off">OFF</div>
   <script>
-    const ws = new WebSocket(location.origin.replace(/^http/, 'ws'));
+    const ws = new WebSocket("wss://esp32-websocket-server-8agw.onrender.com");
     ws.onmessage = (event) => {
       const msg = event.data.trim();
       const statusDiv = document.getElementById("status");
