@@ -30,10 +30,11 @@ const htmlPage = `
   <h1>ESP32 Audio Live Stream</h1>
 
   <p>Device ID:</p>
-  <input id="devId" value="dev001" />
+  <input id="devId" placeholder="Upiši deviceId" />
 
   <p>Token:</p>
-  <input id="token" value="XYZ_SECRET_TOKEN" />
+  <input id="token" placeholder="Upiši token" /> 
+
 
   <div style="margin-top: 15px;">
     <button id="startBtn">Start audio</button>
@@ -113,14 +114,27 @@ const htmlPage = `
     }
 
     startBtn.addEventListener('click', async () => {
-      initAudio();
-      if (audioCtx.state === 'suspended') await audioCtx.resume();
+  const deviceId = devIdInp.value.trim();
+  const token = tokenInp.value.trim();
 
-      connectWS();
-      startBtn.disabled = true;
-      startBtn.textContent = 'Audio radi';
-      statusDiv.textContent = 'Povezujem...';
-    });
+  if (!deviceId) {
+    statusDiv.textContent = "Upiši deviceID pre startovanja";
+    return;
+  }
+  if (!token) {
+    statusDiv.textContent = "Upiši token pre startovanja";
+    return;
+  }
+
+  initAudio();
+  if (audioCtx.state === 'suspended') await audioCtx.resume();
+
+  connectWS();
+  startBtn.disabled = true;
+  startBtn.textContent = 'Audio radi';
+  statusDiv.textContent = 'Povezujem...';
+});
+
   </script>
 </body>
 </html>
