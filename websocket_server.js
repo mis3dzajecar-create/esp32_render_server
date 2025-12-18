@@ -5,7 +5,7 @@ const { URL } = require("url");
 
 // ====== KONFIG (kasnije prebaci u ENV) ======
 const ALLOWED_TOKENS = new Set([
-  "XYZ_SECRET_TOKEN",   // primer: token za dev001
+  "PSEUDONIM",   // primer: token za dev001
   // "NEKI_DRUGI_TOKEN",
 ]);
 
@@ -17,7 +17,7 @@ const htmlPage = `
 <html lang="sr">
 <head>
   <meta charset="UTF-8" />
-  <title>ESP32 Audio Stream (v1.0)</title>
+  <title> Audio Stream (v1.0)</title>
   <style>
     body { font-family: sans-serif; text-align: center; margin-top: 40px; }
     h1 { font-size: 26px; }
