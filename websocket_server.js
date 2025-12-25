@@ -248,6 +248,15 @@ wss.on("connection", (ws, req) => {
   });
 });
 
+setInterval(() => {
+  wss.clients.forEach((ws) => {
+    if (ws.readyState !== WebSocket.OPEN) return;
+
+    // "ws" library: ping to keep NAT/proxy alive
+    try { ws.ping(); } catch {}
+  });
+}, 15000);
+
 server.listen(PORT, () => {
   console.log(`✅ Relay v1.0 server na portu ${PORT}`);
 });
