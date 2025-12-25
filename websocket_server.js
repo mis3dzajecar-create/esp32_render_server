@@ -210,7 +210,7 @@ wss.on("connection", (ws, req) => {
     // jedan producer po deviceId
     closeOldProducer(deviceId, ws);
 
-    ws.send("ACK");
+    ws.send("ACK");   //dodata potvrda konekcije
 
     ws.on("message", (data, isBinary) => {
       if (!isBinary) return;
