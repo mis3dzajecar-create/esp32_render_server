@@ -39,6 +39,22 @@ const htmlPage = `
   <div style="margin-top: 15px;">
     <button id="startBtn">Start audio</button>
   </div>
+    <hr style="margin:30px auto; width: 360px;">
+
+  <h3>WiFi Provision (remote)</h3>
+
+  <p>Novi SSID:</p>
+  <input id="newSsid" placeholder="npr. KOMSIJA_WIFI" />
+
+  <p>Novi Password:</p>
+  <input id="newPass" placeholder="npr. 12345678" />
+
+  <div style="margin-top: 15px;">
+    <button id="sendWifiBtn">Pošalji WiFi kredencije</button>
+  </div>
+
+  <div id="wifiStatus" style="margin-top:10px; font-size:13px; color:#333;"></div>
+
 
   <div id="status">Čekam konekciju...</div>
 
@@ -47,6 +63,11 @@ const htmlPage = `
     const startBtn  = document.getElementById('startBtn');
     const devIdInp  = document.getElementById('devId');
     const tokenInp  = document.getElementById('token');
+    const newSsidInp = document.getElementById('newSsid');
+    const newPassInp = document.getElementById('newPass');
+    const wifiStatus = document.getElementById('wifiStatus');
+    const sendWifiBtn = document.getElementById('sendWifiBtn');
+
 
     let ws = null;
 
@@ -134,17 +155,117 @@ const htmlPage = `
   startBtn.textContent = 'Audio radi';
   statusDiv.textContent = 'Povezujem...';
 });
+sendWifiBtn.addEventListener('click', async () => {
+  const deviceId = devIdInp.value.trim();
+  const token = tokenInp.value.trim();
+  const ssid = newSsidInp.value.trim();
+  const pass = newPassInp.value.trim();
+
+  if (!deviceId || !token) {
+    wifiStatus.textContent = "Upiši deviceId i token iznad.";
+    return;
+  }
+  if (!ssid || !pass) {
+    wifiStatus.textContent = "Upiši novi SSID i password.";
+    return;
+  }
+
+  wifiStatus.textContent = "Šaljem kredencije serveru...";
+
+  try {
+    const resp = await fetch(`/api/wifi_set?deviceId=${encodeURIComponent(deviceId)}&token=${encodeURIComponent(token)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ssid, pass, apply: true })
+    });
+
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || !data.ok) {
+      wifiStatus.textContent = "Neuspešno: " + (data.error || ("HTTP " + resp.status));
+      return;
+    }
+
+    wifiStatus.textContent = "Poslato. ESP treba da pošalje ACK u Serial log i da se prebaci na novu mrežu.";
+  } catch (e) {
+    wifiStatus.textContent = "Greška: " + e.message;
+  }
+});
 
   </script>
 </body>
 </html>
 `;
 
-// HTTP server: isporučuje HTML
+// HTTP server: isporučuje HTML + admin API za wifi_set
 const server = http.createServer((req, res) => {
+  const u = new URL(req.url, "http://localhost");
+
+  // ===== ADMIN API: POST /api/wifi_set?deviceId=...&token=...
+  // Body JSON:
+  // { "ssid":"...", "pass":"...", "apply": true }
+  //
+  // Token ovde koristiš isti koji već imaš u ALLOWED_TOKENS.
+  // (Možemo kasnije odvojiti ADMIN_TOKEN, ali ovo je najbrže i radi odmah.)
+  if (u.pathname === "/api/wifi_set" && req.method === "POST") {
+    const deviceId = (u.searchParams.get("deviceId") || "").trim();
+    const token = (u.searchParams.get("token") || "").trim();
+
+    if (!deviceId || !token || !ALLOWED_TOKENS.has(token)) {
+      res.writeHead(401, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ ok: false, error: "unauthorized" }));
+      return;
+    }
+
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      let payload;
+      try {
+        payload = JSON.parse(body || "{}");
+      } catch {
+        res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ ok: false, error: "bad_json" }));
+        return;
+      }
+
+      const ssid = String(payload.ssid || "").trim();
+      const pass = String(payload.pass || "").trim();
+      const apply = payload.apply !== false; // default true
+
+      if (!ssid || !pass) {
+        res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ ok: false, error: "missing_ssid_or_pass" }));
+        return;
+      }
+
+      const producer = producerByDevice.get(deviceId);
+      if (!producer || producer.readyState !== WebSocket.OPEN) {
+        res.writeHead(409, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ ok: false, error: "device_not_connected" }));
+        return;
+      }
+
+      // Ovo je poruka koju ESP32 očekuje (tvoj novi ESP kod)
+      const msg = { type: "wifi_set", ssid, pass, apply: !!apply };
+
+      try {
+        producer.send(JSON.stringify(msg)); // šaljemo tekstualni WS ka ESP32
+        res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (e) {
+        res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ ok: false, error: "send_failed" }));
+      }
+    });
+
+    return;
+  }
+
+  // default: HTML UI
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
   res.end(htmlPage);
 });
+
 
 const PORT = process.env.PORT || 10000;
 const wss = new WebSocket.Server({ noServer: true });
@@ -212,21 +333,37 @@ wss.on("connection", (ws, req) => {
 
     ws.send("ACK");   //dodata potvrda konekcije
 
-    ws.on("message", (data, isBinary) => {
-      if (!isBinary) return;
-
-      // Ugovor v1.0: 320 bajta po frame-u (20ms PCM16)
-      if (data.length !== 320) return;
-
-      const listeners = listenersByDevice.get(deviceId);
-      if (!listeners) return;
-
-      for (const client of listeners) {
-        if (client.readyState === WebSocket.OPEN) {
-          client.send(data, { binary: true });
-        }
+ws.on("message", (data, isBinary) => {
+  // 1) Tekstualne poruke od ESP (ACK, status, itd.)
+  if (!isBinary) {
+    const text = data.toString();
+    // očekujemo npr: {"type":"wifi_set_ack","ok":true,"ssid":"..."}
+    try {
+      const msg = JSON.parse(text);
+      if (msg && msg.type === "wifi_set_ack") {
+        console.log(`[WIFI] ACK from ${deviceId}: ok=${msg.ok} ssid=${msg.ssid || ""}`);
+      } else {
+        console.log(`[DEVICE ${deviceId}] text:`, text);
       }
-    });
+    } catch {
+      console.log(`[DEVICE ${deviceId}] text:`, text);
+    }
+    return;
+  }
+
+  // 2) Binarni audio (kao do sada)
+  if (data.length !== 320) return;
+
+  const listeners = listenersByDevice.get(deviceId);
+  if (!listeners) return;
+
+  for (const client of listeners) {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(data, { binary: true });
+    }
+  }
+});
+
 
     ws.on("close", () => {
       console.log(`device closed: ${deviceId}`);
