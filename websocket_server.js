@@ -173,7 +173,11 @@ sendWifiBtn.addEventListener('click', async () => {
   wifiStatus.textContent = "Šaljem kredencije serveru...";
 
   try {
-    const resp = await fetch(`/api/wifi_set?deviceId=${encodeURIComponent(deviceId)}&token=${encodeURIComponent(token)}`, {
+    const url = "/api/wifi_set?deviceId=" + encodeURIComponent(deviceId) +
+            "&token=" + encodeURIComponent(token);
+
+    const resp = await fetch(url, {
+
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ssid, pass, apply: true })
