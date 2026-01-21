@@ -55,6 +55,26 @@ const htmlPage = `
 
   <div id="wifiStatus" style="margin-top:10px; font-size:13px; color:#333;"></div>
 
+  <hr style="margin:30px auto; width: 360px;">
+
+  <h3>HIBERNACIJA (remote)</h3>
+
+  <p>Wake interval (sec):</p>
+  <input id="wakeSec" type="number" min="10" step="1" value="600" />
+
+  <p style="margin-top:12px;">
+    <label>
+      <input id="keepAwake" type="checkbox" />
+      keep_awake (1 = budan + stream)
+    </label>
+  </p>
+
+  <div style="margin-top: 15px;">
+    <button id="sendHibBtn">Pošalji HIB konfiguraciju</button>
+  </div>
+
+  <div id="hibStatus" style="margin-top:10px; font-size:13px; color:#333;"></div>
+
 
   <div id="status">Čekam konekciju...</div>
 
@@ -67,6 +87,11 @@ const htmlPage = `
     const newPassInp = document.getElementById('newPass');
     const wifiStatus = document.getElementById('wifiStatus');
     const sendWifiBtn = document.getElementById('sendWifiBtn');
+    const wakeSecInp = document.getElementById('wakeSec');
+    const keepAwakeInp = document.getElementById('keepAwake');
+    const sendHibBtn = document.getElementById('sendHibBtn');
+    const hibStatus = document.getElementById('hibStatus');
+  
 
 
     let ws = null;
@@ -195,6 +220,47 @@ sendWifiBtn.addEventListener('click', async () => {
   }
 });
 
+sendHibBtn.addEventListener('click', async () => {
+  const deviceId = devIdInp.value.trim();
+  const token = tokenInp.value.trim();
+  const wake_interval_sec = Number(wakeSecInp.value);
+  const keep_awake = keepAwakeInp.checked ? 1 : 0;
+
+  if (!deviceId || !token) {
+    hibStatus.textContent = "Upiši deviceId i token iznad.";
+    return;
+  }
+  if (!Number.isFinite(wake_interval_sec) || wake_interval_sec < 10) {
+    hibStatus.textContent = "wake_interval_sec mora biti broj >= 10.";
+    return;
+  }
+
+  hibStatus.textContent = "Šaljem HIB konfiguraciju serveru...";
+
+  try {
+    const url = "/api/hib_set?deviceId=" + encodeURIComponent(deviceId) +
+                "&token=" + encodeURIComponent(token);
+
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ keep_awake, wake_interval_sec })
+    });
+
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || !data.ok) {
+      hibStatus.textContent = "Neuspešno: " + (data.error || ("HTTP " + resp.status));
+      return;
+    }
+
+    hibStatus.textContent =
+      "OK. Sačuvano na serveru. pushed=" + (data.pushed ? "1" : "0") +
+      " (ako je uređaj online dobija odmah; ako nije, dobija na sledećem wake).";
+  } catch (e) {
+    hibStatus.textContent = "Greška: " + e.message;
+  }
+});
+
   </script>
 </body>
 </html>
@@ -264,6 +330,52 @@ const server = http.createServer((req, res) => {
 
     return;
   }
+  // ===== ADMIN API: POST /api/hib_set?deviceId=...&token=...
+  // Body JSON:
+  // { "keep_awake": 0|1, "wake_interval_sec": 600 }
+  if (u.pathname === "/api/hib_set" && req.method === "POST") {
+    const deviceId = (u.searchParams.get("deviceId") || "").trim();
+    const token = (u.searchParams.get("token") || "").trim();
+
+    if (!deviceId || !token || !ALLOWED_TOKENS.has(token)) {
+      res.writeHead(401, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ ok: false, error: "unauthorized" }));
+      return;
+    }
+
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      let payload;
+      try {
+        payload = JSON.parse(body || "{}");
+      } catch {
+        res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ ok: false, error: "bad_json" }));
+        return;
+      }
+
+      const keepAwake = Number(payload.keep_awake) ? 1 : 0;
+      const wakeSec = Number(payload.wake_interval_sec);
+
+      if (!Number.isFinite(wakeSec) || wakeSec < 10) {
+        res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ ok: false, error: "bad_wake_interval_sec" }));
+        return;
+      }
+
+      // 1) Sačuvaj na serveru (da preživi device sleep)
+      const cfg = setHibConfig(deviceId, keepAwake, wakeSec);
+
+      // 2) Ako je device online, odmah pošalji
+      const pushed = sendHibConfigToDevice(deviceId);
+
+      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ ok: true, stored: cfg, pushed }));
+    });
+
+    return;
+  }
 
   // default: HTML UI
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
@@ -278,6 +390,51 @@ const wss = new WebSocket.Server({ noServer: true });
 const listenersByDevice = new Map();
 // deviceId -> ws (producer)
 const producerByDevice = new Map();
+
+// ===== HIB CONFIG (server memorija po uređaju) =====
+// Napomena: ovo je RAM-only (reset servera briše). Kasnije možemo u fajl / DB.
+const hibConfigByDevice = new Map();
+
+// Default vrednosti ako nikad nisi poslao config za taj deviceId
+function getDefaultHibConfig() {
+  return {
+    keep_awake: 0,
+    wake_interval_sec: 600
+  };
+}
+
+function getHibConfig(deviceId) {
+  return hibConfigByDevice.get(deviceId) || getDefaultHibConfig();
+}
+
+function setHibConfig(deviceId, keepAwake, wakeIntervalSec) {
+  const cfg = {
+    keep_awake: keepAwake ? 1 : 0,
+    wake_interval_sec: Math.max(10, Number(wakeIntervalSec) || 600),
+  };
+  hibConfigByDevice.set(deviceId, cfg);
+  return cfg;
+}
+
+// Poruka koju ESP32 očekuje (ws_take_hib_config_update)
+function sendHibConfigToDevice(deviceId) {
+  const producer = producerByDevice.get(deviceId);
+  if (!producer || producer.readyState !== WebSocket.OPEN) return false;
+
+  const cfg = getHibConfig(deviceId);
+  const msg = {
+    type: "hib_config",
+    keep_awake: cfg.keep_awake,
+    wake_interval_sec: cfg.wake_interval_sec
+  };
+
+  try {
+    producer.send(JSON.stringify(msg));
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function addListener(deviceId, ws) {
   if (!listenersByDevice.has(deviceId)) listenersByDevice.set(deviceId, new Set());
@@ -336,6 +493,13 @@ wss.on("connection", (ws, req) => {
     closeOldProducer(deviceId, ws);
 
     ws.send("ACK");   //dodata potvrda konekcije
+
+    // Pošalji poslednju HIB konfiguraciju čim se uređaj javi (da ne ode u sleep zbog "No CONFIG")
+    // Mali delay da damo vremena da se WS potpuno stabilizuje kroz proxy.
+    setTimeout(() => {
+      const ok = sendHibConfigToDevice(deviceId);
+      console.log(`[HIB] push on connect deviceId=${deviceId} ok=${ok ? 1 : 0} cfg=`, getHibConfig(deviceId));
+    }, 300);
 
 ws.on("message", (data, isBinary) => {
   // 1) Tekstualne poruke od ESP (ACK, status, itd.)
