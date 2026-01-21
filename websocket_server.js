@@ -1,4 +1,4 @@
-// websocket_server.js — Relay v1.0 (ESP32 device -> listeners) + HTML player
+// websocket_server.js — Relay v1.0 (ESP32 device -> listeners) + HTML control panel
 const http = require("http");
 const WebSocket = require("ws");
 const { URL } = require("url");
@@ -9,225 +9,164 @@ const ALLOWED_TOKENS = new Set([
   // "NEKI_DRUGI_TOKEN",
 ]);
 
-// ====== HTML (minimalno) ======
-// Važno: naš ugovor je 8 kHz, PCM16 mono.
-// Browser AudioContext ponekad ignoriše sampleRate, ali mi svakako postavljamo 8000.
-const htmlPage = `
-<!DOCTYPE html>
+// ===== HIB CONFIG (server memorija po uređaju) =====
+// Napomena: RAM-only (restart servera briše). Kasnije: fajl / DB.
+const hibConfigByDevice = new Map();
+
+function getDefaultHibConfig() {
+  return { keep_awake: 0, wake_interval_sec: 600 };
+}
+function getHibConfig(deviceId) {
+  return hibConfigByDevice.get(deviceId) || getDefaultHibConfig();
+}
+function setHibConfig(deviceId, keepAwake, wakeIntervalSec) {
+  const cfg = {
+    keep_awake: keepAwake ? 1 : 0,
+    wake_interval_sec: Math.max(10, Number(wakeIntervalSec) || 600),
+  };
+  hibConfigByDevice.set(deviceId, cfg);
+  return cfg;
+}
+
+// ====== WS maps ======
+const listenersByDevice = new Map(); // deviceId -> Set(ws listeners)
+const producerByDevice = new Map();  // deviceId -> ws producer
+
+function addListener(deviceId, ws) {
+  if (!listenersByDevice.has(deviceId)) listenersByDevice.set(deviceId, new Set());
+  listenersByDevice.get(deviceId).add(ws);
+}
+function removeListener(deviceId, ws) {
+  const set = listenersByDevice.get(deviceId);
+  if (!set) return;
+  set.delete(ws);
+  if (set.size === 0) listenersByDevice.delete(deviceId);
+}
+function closeOldProducer(deviceId, newWs) {
+  const old = producerByDevice.get(deviceId);
+  if (old && old !== newWs) {
+    try { old.close(); } catch {}
+  }
+  producerByDevice.set(deviceId, newWs);
+}
+
+// Poruka koju ESP32 očekuje (ws_take_hib_config_update)
+function sendHibConfigToDevice(deviceId) {
+  const producer = producerByDevice.get(deviceId);
+  if (!producer || producer.readyState !== WebSocket.OPEN) return false;
+
+  const cfg = getHibConfig(deviceId);
+  const msg = {
+    type: "config", // BITNO: firmware očekuje "config"
+    keep_awake: cfg.keep_awake,
+    wake_interval_sec: cfg.wake_interval_sec
+  };
+
+  try {
+    producer.send(JSON.stringify(msg));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// ====== HTML UI ======
+const htmlPage = `<!DOCTYPE html>
 <html lang="sr">
 <head>
   <meta charset="UTF-8" />
-  <title> Audio Stream (v1.0)</title>
+  <title>ESP32 Audio Control Panel</title>
   <style>
-  :root {
-    --bg: #0b1220;
-    --card: rgba(255,255,255,0.06);
-    --card2: rgba(255,255,255,0.08);
-    --text: #e8eefc;
-    --muted: rgba(232,238,252,0.7);
-    --accent: #6aa7ff;
-    --accent2: #9b7bff;
-    --good: #47d18c;
-    --bad: #ff6a6a;
-    --warn: #ffd36a;
-    --border: rgba(255,255,255,0.12);
-    --shadow: 0 12px 40px rgba(0,0,0,0.35);
-    --radius: 16px;
-  }
+    :root {
+      --bg: #0b1220;
+      --card: rgba(255,255,255,0.06);
+      --text: #e8eefc;
+      --muted: rgba(232,238,252,0.7);
+      --good: #47d18c;
+      --bad: #ff6a6a;
+      --warn: #ffd36a;
+      --border: rgba(255,255,255,0.12);
+      --shadow: 0 12px 40px rgba(0,0,0,0.35);
+      --radius: 16px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+      color: var(--text);
+      background:
+        radial-gradient(900px 500px at 15% 10%, rgba(106,167,255,0.28), transparent 55%),
+        radial-gradient(700px 420px at 85% 15%, rgba(155,123,255,0.22), transparent 55%),
+        radial-gradient(900px 500px at 50% 90%, rgba(71,209,140,0.10), transparent 60%),
+        var(--bg);
+      padding: 28px 16px;
+    }
+    .wrap { max-width: 980px; margin: 0 auto; }
+    .header { display:flex; align-items:flex-end; justify-content:space-between; gap:14px; margin-bottom:18px; }
+    .title h1 { font-size: 26px; margin: 0 0 6px 0; }
+    .title p { margin: 0; color: var(--muted); font-size: 13px; }
+    .pill {
+      display:inline-flex; align-items:center; gap:8px; padding:10px 12px;
+      border:1px solid var(--border); background: rgba(255,255,255,0.05);
+      border-radius:999px; box-shadow: var(--shadow); font-size:12px; color: var(--muted);
+    }
+    .dot { width:10px; height:10px; border-radius:999px; background: var(--warn); box-shadow:0 0 0 4px rgba(255,211,106,0.15); }
+    .dot.ok { background: var(--good); box-shadow:0 0 0 4px rgba(71,209,140,0.15); }
+    .dot.bad { background: var(--bad); box-shadow:0 0 0 4px rgba(255,106,106,0.15); }
 
-  * { box-sizing: border-box; }
+    .grid { display:grid; grid-template-columns: 1.2fr 1fr; gap:16px; }
+    @media (max-width: 920px){ .grid{ grid-template-columns:1fr; } }
 
-  body {
-    margin: 0;
-    min-height: 100vh;
-    font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
-    color: var(--text);
-    background:
-      radial-gradient(900px 500px at 15% 10%, rgba(106,167,255,0.28), transparent 55%),
-      radial-gradient(700px 420px at 85% 15%, rgba(155,123,255,0.22), transparent 55%),
-      radial-gradient(900px 500px at 50% 90%, rgba(71,209,140,0.10), transparent 60%),
-      var(--bg);
-    padding: 28px 16px;
-  }
+    .card {
+      background: var(--card);
+      border:1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(10px);
+    }
+    .card h2 { margin: 0 0 10px 0; font-size: 16px; }
+    .sub { color: var(--muted); font-size: 13px; margin: 0 0 14px 0; }
+    .row { display:grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 520px){ .row{ grid-template-columns:1fr; } }
 
-  .wrap {
-    max-width: 980px;
-    margin: 0 auto;
-  }
+    label { display:block; font-size:12px; color: var(--muted); margin-bottom:6px; }
+    input[type="text"], input[type="password"], input[type="number"]{
+      width:100%; padding: 11px 12px; border-radius:12px;
+      border:1px solid rgba(255,255,255,0.14); background: rgba(0,0,0,0.18);
+      color: var(--text); outline:none;
+    }
+    .btnbar { display:flex; gap:10px; flex-wrap:wrap; margin-top:12px; }
+    button{
+      border:1px solid rgba(255,255,255,0.16);
+      background: linear-gradient(135deg, rgba(106,167,255,0.22), rgba(155,123,255,0.18));
+      color: var(--text);
+      padding: 10px 12px; border-radius:12px; cursor:pointer;
+    }
+    button.secondary { background: rgba(255,255,255,0.06); }
+    .status{
+      margin-top: 10px;
+      font-size: 13px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.14);
+      background: rgba(0,0,0,0.14);
+      color: var(--muted);
+      white-space: pre-wrap;
+    }
+    .status.ok { border-color: rgba(71,209,140,0.35); color: rgba(71,209,140,0.95); }
+    .status.bad { border-color: rgba(255,106,106,0.35); color: rgba(255,106,106,0.95); }
+    .status.warn { border-color: rgba(255,211,106,0.35); color: rgba(255,211,106,0.95); }
 
-  .header {
-    display: flex;
-    align-items: flex-end;
-    justify-content: space-between;
-    gap: 14px;
-    margin-bottom: 18px;
-  }
-
-  .title {
-    line-height: 1.1;
-  }
-
-  .title h1 {
-    font-size: 26px;
-    margin: 0 0 6px 0;
-    letter-spacing: 0.2px;
-  }
-
-  .title p {
-    margin: 0;
-    color: var(--muted);
-    font-size: 13px;
-  }
-
-  .pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 10px 12px;
-    border: 1px solid var(--border);
-    background: rgba(255,255,255,0.05);
-    border-radius: 999px;
-    box-shadow: var(--shadow);
-    font-size: 12px;
-    color: var(--muted);
-  }
-
-  .dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 999px;
-    background: var(--warn);
-    box-shadow: 0 0 0 4px rgba(255,211,106,0.15);
-  }
-  .dot.ok { background: var(--good); box-shadow: 0 0 0 4px rgba(71,209,140,0.15); }
-  .dot.bad { background: var(--bad); box-shadow: 0 0 0 4px rgba(255,106,106,0.15); }
-
-  .grid {
-    display: grid;
-    grid-template-columns: 1.2fr 1fr;
-    gap: 16px;
-  }
-  @media (max-width: 920px) {
-    .grid { grid-template-columns: 1fr; }
-  }
-
-  .card {
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 16px;
-    box-shadow: var(--shadow);
-    backdrop-filter: blur(10px);
-  }
-
-  .card h2 {
-    margin: 0 0 10px 0;
-    font-size: 16px;
-    letter-spacing: 0.2px;
-  }
-
-  .sub {
-    color: var(--muted);
-    font-size: 13px;
-    margin: 0 0 14px 0;
-  }
-
-  .row {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 12px;
-  }
-  @media (max-width: 520px) {
-    .row { grid-template-columns: 1fr; }
-  }
-
-  label {
-    display: block;
-    font-size: 12px;
-    color: var(--muted);
-    margin-bottom: 6px;
-  }
-
-  input[type="text"],
-  input[type="password"],
-  input[type="number"] {
-    width: 100%;
-    padding: 11px 12px;
-    border-radius: 12px;
-    border: 1px solid rgba(255,255,255,0.14);
-    background: rgba(0,0,0,0.18);
-    color: var(--text);
-    outline: none;
-  }
-  input[type="text"]:focus,
-  input[type="password"]:focus,
-  input[type="number"]:focus {
-    border-color: rgba(106,167,255,0.6);
-    box-shadow: 0 0 0 4px rgba(106,167,255,0.14);
-  }
-
-  .btnbar {
-    display: flex;
-    gap: 10px;
-    flex-wrap: wrap;
-    margin-top: 12px;
-  }
-
-  button {
-    appearance: none;
-    border: 1px solid rgba(255,255,255,0.16);
-    background: linear-gradient(135deg, rgba(106,167,255,0.22), rgba(155,123,255,0.18));
-    color: var(--text);
-    padding: 10px 12px;
-    border-radius: 12px;
-    cursor: pointer;
-    transition: transform .05s ease, border-color .2s ease, background .2s ease;
-  }
-  button:hover { border-color: rgba(255,255,255,0.28); }
-  button:active { transform: translateY(1px); }
-  button.secondary {
-    background: rgba(255,255,255,0.06);
-  }
-
-  .status {
-    margin-top: 10px;
-    font-size: 13px;
-    padding: 10px 12px;
-    border-radius: 12px;
-    border: 1px solid rgba(255,255,255,0.14);
-    background: rgba(0,0,0,0.14);
-    color: var(--muted);
-    white-space: pre-wrap;
-  }
-
-  .status.ok { border-color: rgba(71,209,140,0.35); color: rgba(71,209,140,0.95); }
-  .status.bad { border-color: rgba(255,106,106,0.35); color: rgba(255,106,106,0.95); }
-  .status.warn { border-color: rgba(255,211,106,0.35); color: rgba(255,211,106,0.95); }
-
-  .toggle {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 10px 12px;
-    border-radius: 12px;
-    border: 1px solid rgba(255,255,255,0.14);
-    background: rgba(0,0,0,0.14);
-  }
-  .toggle input { transform: scale(1.15); }
-
-  .mini {
-    font-size: 12px;
-    color: var(--muted);
-    margin-top: 8px;
-  }
-
-  .footer {
-    margin-top: 14px;
-    color: rgba(232,238,252,0.55);
-    font-size: 12px;
-  }
-</style>
-
+    .toggle{
+      display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:12px;
+      border:1px solid rgba(255,255,255,0.14); background: rgba(0,0,0,0.14);
+    }
+    .toggle input { transform: scale(1.15); }
+    .mini { font-size: 12px; color: var(--muted); margin-top: 8px; }
+    .footer { margin-top: 14px; color: rgba(232,238,252,0.55); font-size: 12px; }
+  </style>
 </head>
 <body>
   <div class="wrap">
@@ -250,11 +189,11 @@ const htmlPage = `
         <div class="row">
           <div>
             <label for="devId">Device ID</label>
-            <input id="devId" type="text" value="dev001" autocomplete="off"/>
+            <input id="devId" placeholder="npr. dev001" autocomplete="off" />
           </div>
           <div>
             <label for="token">Token</label>
-            <input id="token" type="password" value="" placeholder="PSEUDONIM" autocomplete="off"/>
+            <input id="token" type="password" placeholder="token" autocomplete="off" />
           </div>
         </div>
 
@@ -262,7 +201,7 @@ const htmlPage = `
           <button id="refreshCfgBtn" class="secondary">Refresh HIB config</button>
         </div>
 
-        <div id="idStatus" class="status">Unesi deviceId + token, zatim klikni refresh (ili samo promeni polja).</div>
+        <div id="idStatus" class="status">Unesi deviceId + token.</div>
       </div>
 
       <div class="card">
@@ -324,205 +263,245 @@ const htmlPage = `
     </div>
   </div>
 
-  <script>
-    const devIdInp = document.getElementById('devId');
-    const tokenInp = document.getElementById('token');
+<script>
+  const devIdInp = document.getElementById('devId');
+  const tokenInp = document.getElementById('token');
 
-    const wakeSecInp = document.getElementById('wakeSec');
-    const keepAwakeInp = document.getElementById('keepAwake');
+  const wakeSecInp = document.getElementById('wakeSec');
+  const keepAwakeInp = document.getElementById('keepAwake');
 
-    const sendHibBtn = document.getElementById('sendHibBtn');
-    const hibStatus = document.getElementById('hibStatus');
+  const sendHibBtn = document.getElementById('sendHibBtn');
+  const hibStatus = document.getElementById('hibStatus');
 
-    const ssidInp = document.getElementById('ssid');
-    const passInp = document.getElementById('pass');
-    const sendWifiBtn = document.getElementById('sendWifiBtn');
-    const wifiStatus = document.getElementById('wifiStatus');
+  const ssidInp = document.getElementById('ssid');
+  const passInp = document.getElementById('pass');
+  const sendWifiBtn = document.getElementById('sendWifiBtn');
+  const wifiStatus = document.getElementById('wifiStatus');
 
-    const statusDiv = document.getElementById('status');
-    const idStatus = document.getElementById('idStatus');
+  const statusDiv = document.getElementById('status');
+  const idStatus = document.getElementById('idStatus');
+  const refreshCfgBtn = document.getElementById('refreshCfgBtn');
 
-    const refreshCfgBtn = document.getElementById('refreshCfgBtn');
+  const dot = document.getElementById('dot');
+  const serverState = document.getElementById('serverState');
 
-    const dot = document.getElementById('dot');
-    const serverState = document.getElementById('serverState');
+  function setPill(online, text) {
+    dot.classList.remove('ok','bad');
+    if (online === true) dot.classList.add('ok');
+    else if (online === false) dot.classList.add('bad');
+    serverState.textContent = text;
+  }
 
-    function setPill(online, text) {
-      dot.classList.remove('ok','bad');
-      if (online === true) dot.classList.add('ok');
-      else if (online === false) dot.classList.add('bad');
-      serverState.textContent = text;
+  function setBox(el, msg, kind) {
+    el.classList.remove('ok','bad','warn');
+    if (kind) el.classList.add(kind);
+    el.textContent = msg;
+  }
+
+  function persistIdToken() {
+    try {
+      localStorage.setItem("last_device_id", devIdInp.value.trim());
+      localStorage.setItem("last_token", tokenInp.value.trim());
+    } catch {}
+  }
+
+  // Restore previous inputs (no hardcoded secrets)
+  try {
+    const lastDev = localStorage.getItem("last_device_id") || "";
+    const lastTok = localStorage.getItem("last_token") || "";
+    if (lastDev) devIdInp.value = lastDev;
+    if (lastTok) tokenInp.value = lastTok;
+  } catch {}
+
+  async function fetchHibConfig() {
+    const deviceId = devIdInp.value.trim();
+    const token = tokenInp.value.trim();
+
+    if (!deviceId || !token) {
+      setBox(idStatus, "Upiši deviceId i token.", "warn");
+      setPill(null, "Server: standby");
+      return;
     }
 
-    function setBox(el, msg, kind) {
-      el.classList.remove('ok','bad','warn');
-      if (kind) el.classList.add(kind);
-      el.textContent = msg;
+    setBox(idStatus, "Učitavam HIB config sa servera...", "warn");
+
+    try {
+      const url = "/api/hib_get?deviceId=" + encodeURIComponent(deviceId) +
+                  "&token=" + encodeURIComponent(token);
+
+      const resp = await fetch(url, { method: "GET" });
+
+      // Ako slučajno vrati HTML, ovo će pomoći da odmah vidiš problem
+      const ct = (resp.headers.get("content-type") || "").toLowerCase();
+      if (!ct.includes("application/json")) {
+        setBox(idStatus, "Neuspešno: server nije vratio JSON (content-type=" + ct + ")", "bad");
+        setPill(false, "Server: route/error");
+        return;
+      }
+
+      const data = await resp.json();
+
+      if (!resp.ok || !data.ok) {
+        setBox(idStatus, "Neuspešno: " + (data.error || ("HTTP " + resp.status)), "bad");
+        setPill(false, "Server: auth/error");
+        return;
+      }
+
+      wakeSecInp.value = data.cfg?.wake_interval_sec ?? 600;
+      keepAwakeInp.checked = (Number(data.cfg?.keep_awake) === 1);
+
+      const online = !!data.online;
+      setPill(online, online ? ("Device online: " + deviceId) : ("Device offline: " + deviceId));
+
+      setBox(idStatus, "OK. Učitano sa servera. online=" + (online ? "1" : "0"), "ok");
+      setBox(statusDiv,
+        "deviceId=" + deviceId + "\\n" +
+        "online=" + (online ? "1" : "0") + "\\n" +
+        "keep_awake=" + (keepAwakeInp.checked ? "1" : "0") + "\\n" +
+        "wake_interval_sec=" + wakeSecInp.value,
+        online ? "ok" : "warn"
+      );
+    } catch (e) {
+      setBox(idStatus, "Greška: " + e.message, "bad");
+      setPill(false, "Server: error");
+    }
+  }
+
+  // Debounce + ne zovi server dok token nije “dovoljno dug”
+  let tDeb;
+  function scheduleFetch() {
+    persistIdToken();
+    const d = devIdInp.value.trim();
+    const t = tokenInp.value.trim();
+
+    if (d.length < 3 || t.length < 4) {
+      setBox(idStatus, "Upiši deviceId i token.", "warn");
+      setPill(null, "Server: standby");
+      return;
     }
 
-    async function fetchHibConfig() {
-      const deviceId = devIdInp.value.trim();
-      const token = tokenInp.value.trim();
+    clearTimeout(tDeb);
+    tDeb = setTimeout(fetchHibConfig, 600);
+  }
 
-      if (!deviceId || !token) {
-        setBox(idStatus, "Upiši deviceId i token.", "warn");
-        setPill(null, "Server: standby");
-        return;
-      }
+  devIdInp.addEventListener('input', scheduleFetch);
+  tokenInp.addEventListener('input', scheduleFetch);
+  refreshCfgBtn.addEventListener('click', fetchHibConfig);
 
-      setBox(idStatus, "Učitavam HIB config sa servera...", "warn");
+  sendHibBtn.addEventListener('click', async () => {
+    const deviceId = devIdInp.value.trim();
+    const token = tokenInp.value.trim();
+    const wake_interval_sec = Number(wakeSecInp.value);
+    const keep_awake = keepAwakeInp.checked ? 1 : 0;
 
-      try {
-        const url = "/api/hib_get?deviceId=" + encodeURIComponent(deviceId) +
-                    "&token=" + encodeURIComponent(token);
-
-        const resp = await fetch(url, { method: "GET" });
-        const data = await resp.json().catch(() => ({}));
-
-        if (!resp.ok || !data.ok) {
-          setBox(idStatus, "Neuspešno: " + (data.error || ("HTTP " + resp.status)), "bad");
-          setPill(false, "Server: auth/error");
-          return;
-        }
-
-        // Popuni UI formu iz server truth
-        wakeSecInp.value = data.cfg?.wake_interval_sec ?? 600;
-        keepAwakeInp.checked = (Number(data.cfg?.keep_awake) === 1);
-
-        const online = !!data.online;
-        setPill(online, online ? ("Device online: " + deviceId) : ("Device offline: " + deviceId));
-
-        setBox(idStatus, "OK. Učitano sa servera. online=" + (online ? "1" : "0"), "ok");
-        setBox(statusDiv,
-               "deviceId=" + deviceId + "\\n" +
-               "online=" + (online ? "1" : "0") + "\\n" +
-               "keep_awake=" + (keepAwakeInp.checked ? "1" : "0") + "\\n" +
-               "wake_interval_sec=" + wakeSecInp.value,
-               online ? "ok" : "warn"
-        );
-      } catch (e) {
-        setBox(idStatus, "Greška: " + e.message, "bad");
-        setPill(false, "Server: error");
-      }
+    if (!deviceId || !token) {
+      setBox(hibStatus, "Upiši deviceId i token u sekciji Identifikacija.", "warn");
+      return;
+    }
+    if (!Number.isFinite(wake_interval_sec) || wake_interval_sec < 10) {
+      setBox(hibStatus, "wake_interval_sec mora biti broj >= 10.", "bad");
+      return;
     }
 
-    // Auto-fetch kad korisnik unosi deviceId/token (debounce)
-    let tDeb;
-    function scheduleFetch() {
-      clearTimeout(tDeb);
-      tDeb = setTimeout(fetchHibConfig, 400);
+    setBox(hibStatus, "Šaljem HIB konfiguraciju serveru...", "warn");
+
+    try {
+      const url = "/api/hib_set?deviceId=" + encodeURIComponent(deviceId) +
+                  "&token=" + encodeURIComponent(token);
+
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ keep_awake, wake_interval_sec })
+      });
+
+      const ct = (resp.headers.get("content-type") || "").toLowerCase();
+      if (!ct.includes("application/json")) {
+        setBox(hibStatus, "Neuspešno: server nije vratio JSON (content-type=" + ct + ")", "bad");
+        return;
+      }
+
+      const data = await resp.json();
+
+      if (!resp.ok || !data.ok) {
+        setBox(hibStatus, "Neuspešno: " + (data.error || ("HTTP " + resp.status)), "bad");
+        return;
+      }
+
+      setBox(hibStatus,
+        "OK. Sačuvano na serveru. pushed=" + (data.pushed ? "1" : "0") +
+        " (online dobija odmah; offline dobija na sledećem wake).",
+        "ok");
+
+      fetchHibConfig();
+    } catch (e) {
+      setBox(hibStatus, "Greška: " + e.message, "bad");
     }
-    devIdInp.addEventListener('input', scheduleFetch);
-    tokenInp.addEventListener('input', scheduleFetch);
-    refreshCfgBtn.addEventListener('click', fetchHibConfig);
+  });
 
-    sendHibBtn.addEventListener('click', async () => {
-      const deviceId = devIdInp.value.trim();
-      const token = tokenInp.value.trim();
-      const wake_interval_sec = Number(wakeSecInp.value);
-      const keep_awake = keepAwakeInp.checked ? 1 : 0;
+  sendWifiBtn.addEventListener('click', async () => {
+    const deviceId = devIdInp.value.trim();
+    const token = tokenInp.value.trim();
+    const ssid = ssidInp.value.trim();
+    const pass = passInp.value;
 
-      if (!deviceId || !token) {
-        setBox(hibStatus, "Upiši deviceId i token u sekciji Identifikacija.", "warn");
-        return;
-      }
-      if (!Number.isFinite(wake_interval_sec) || wake_interval_sec < 10) {
-        setBox(hibStatus, "wake_interval_sec mora biti broj >= 10.", "bad");
-        return;
-      }
+    if (!deviceId || !token) {
+      setBox(wifiStatus, "Upiši deviceId i token u sekciji Identifikacija.", "warn");
+      return;
+    }
+    if (!ssid) {
+      setBox(wifiStatus, "SSID je obavezan.", "bad");
+      return;
+    }
 
-      setBox(hibStatus, "Šaljem HIB konfiguraciju serveru...", "warn");
+    setBox(wifiStatus, "Šaljem Wi-Fi kredencijale...", "warn");
 
-      try {
-        const url = "/api/hib_set?deviceId=" + encodeURIComponent(deviceId) +
-                    "&token=" + encodeURIComponent(token);
+    try {
+      const url = "/api/wifi_set?deviceId=" + encodeURIComponent(deviceId) +
+                  "&token=" + encodeURIComponent(token);
 
-        const resp = await fetch(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ keep_awake, wake_interval_sec })
-        });
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ssid, pass, apply: true })
+      });
 
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok || !data.ok) {
-          setBox(hibStatus, "Neuspešno: " + (data.error || ("HTTP " + resp.status)), "bad");
-          return;
-        }
-
-        setBox(hibStatus,
-               "OK. Sačuvano na serveru. pushed=" + (data.pushed ? "1" : "0") +
-               " (online dobija odmah; offline dobija na sledećem wake).",
-               "ok");
-
-        // osveži prikaz “server truth”
-        fetchHibConfig();
-      } catch (e) {
-        setBox(hibStatus, "Greška: " + e.message, "bad");
-      }
-    });
-
-    // Postojeći WiFi send (zadrži logiku, samo UX poruke lepše)
-    sendWifiBtn.addEventListener('click', async () => {
-      const deviceId = devIdInp.value.trim();
-      const token = tokenInp.value.trim();
-      const ssid = ssidInp.value.trim();
-      const pass = passInp.value;
-
-      if (!deviceId || !token) {
-        setBox(wifiStatus, "Upiši deviceId i token u sekciji Identifikacija.", "warn");
-        return;
-      }
-      if (!ssid) {
-        setBox(wifiStatus, "SSID je obavezan.", "bad");
+      const ct = (resp.headers.get("content-type") || "").toLowerCase();
+      if (!ct.includes("application/json")) {
+        setBox(wifiStatus, "Neuspešno: server nije vratio JSON (content-type=" + ct + ")", "bad");
         return;
       }
 
-      setBox(wifiStatus, "Šaljem Wi-Fi kredencijale...", "warn");
+      const data = await resp.json();
 
-      try {
-        const url = "/api/wifi_set?deviceId=" + encodeURIComponent(deviceId) +
-                    "&token=" + encodeURIComponent(token);
-
-        const resp = await fetch(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ssid, pass, apply: true })
-        });
-
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok || !data.ok) {
-          setBox(wifiStatus, "Neuspešno: " + (data.error || ("HTTP " + resp.status)), "bad");
-          return;
-        }
-
-        setBox(wifiStatus,
-               "OK. Wi-Fi set poslat. pushed=" + (data.pushed ? "1" : "0"),
-               "ok");
-      } catch (e) {
-        setBox(wifiStatus, "Greška: " + e.message, "bad");
+      if (!resp.ok || !data.ok) {
+        setBox(wifiStatus, "Neuspešno: " + (data.error || ("HTTP " + resp.status)), "bad");
+        return;
       }
-    });
 
-    // Inicijalno stanje
-    setPill(null, "Server: standby");
-    setBox(statusDiv, "Unesi deviceId + token.", "warn");
-  </script>
+      setBox(wifiStatus, "OK. Wi-Fi set poslat. pushed=" + (data.pushed ? "1" : "0"), "ok");
+    } catch (e) {
+      setBox(wifiStatus, "Greška: " + e.message, "bad");
+    }
+  });
+
+  setPill(null, "Server: standby");
+  setBox(statusDiv, "Unesi deviceId + token.", "warn");
+
+  // Ako postoje u localStorage, može odmah refresh
+  if ((devIdInp.value || "").trim().length >= 3 && (tokenInp.value || "").trim().length >= 4) {
+    fetchHibConfig();
+  }
+</script>
 </body>
+</html>`;
 
-</html>
-`;
-
-// HTTP server: isporučuje HTML + admin API za wifi_set
+// ===== HTTP server: HTML + admin API =====
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, "http://localhost");
 
-  // ===== ADMIN API: POST /api/wifi_set?deviceId=...&token=...
-  // Body JSON:
-  // { "ssid":"...", "pass":"...", "apply": true }
-  //
-  // Token ovde koristiš isti koji već imaš u ALLOWED_TOKENS.
-  // (Možemo kasnije odvojiti ADMIN_TOKEN, ali ovo je najbrže i radi odmah.)
-  if (u.pathname === "/api/wifi_set" && req.method === "POST") {
+  // GET /api/hib_get
+  if (u.pathname === "/api/hib_get" && req.method === "GET") {
     const deviceId = (u.searchParams.get("deviceId") || "").trim();
     const token = (u.searchParams.get("token") || "").trim();
 
@@ -532,53 +511,16 @@ const server = http.createServer((req, res) => {
       return;
     }
 
-    let body = "";
-    req.on("data", (chunk) => (body += chunk));
-    req.on("end", () => {
-      let payload;
-      try {
-        payload = JSON.parse(body || "{}");
-      } catch {
-        res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
-        res.end(JSON.stringify({ ok: false, error: "bad_json" }));
-        return;
-      }
+    const cfg = getHibConfig(deviceId);
+    const p = producerByDevice.get(deviceId);
+    const online = !!p && p.readyState === WebSocket.OPEN;
 
-      const ssid = String(payload.ssid || "").trim();
-      const pass = String(payload.pass || "").trim();
-      const apply = payload.apply !== false; // default true
-
-      if (!ssid || !pass) {
-        res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
-        res.end(JSON.stringify({ ok: false, error: "missing_ssid_or_pass" }));
-        return;
-      }
-
-      const producer = producerByDevice.get(deviceId);
-      if (!producer || producer.readyState !== WebSocket.OPEN) {
-        res.writeHead(409, { "Content-Type": "application/json; charset=utf-8" });
-        res.end(JSON.stringify({ ok: false, error: "device_not_connected" }));
-        return;
-      }
-
-      // Ovo je poruka koju ESP32 očekuje (tvoj novi ESP kod)
-      const msg = { type: "wifi_set", ssid, pass, apply: !!apply };
-
-      try {
-        producer.send(JSON.stringify(msg)); // šaljemo tekstualni WS ka ESP32
-        res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-        res.end(JSON.stringify({ ok: true }));
-      } catch (e) {
-        res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
-        res.end(JSON.stringify({ ok: false, error: "send_failed" }));
-      }
-    });
-
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({ ok: true, deviceId, online, cfg }));
     return;
   }
-  // ===== ADMIN API: POST /api/hib_set?deviceId=...&token=...
-  // Body JSON:
-  // { "keep_awake": 0|1, "wake_interval_sec": 600 }
+
+  // POST /api/hib_set
   if (u.pathname === "/api/hib_set" && req.method === "POST") {
     const deviceId = (u.searchParams.get("deviceId") || "").trim();
     const token = (u.searchParams.get("token") || "").trim();
@@ -593,9 +535,8 @@ const server = http.createServer((req, res) => {
     req.on("data", (chunk) => (body += chunk));
     req.on("end", () => {
       let payload;
-      try {
-        payload = JSON.parse(body || "{}");
-      } catch {
+      try { payload = JSON.parse(body || "{}"); }
+      catch {
         res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
         res.end(JSON.stringify({ ok: false, error: "bad_json" }));
         return;
@@ -610,17 +551,17 @@ const server = http.createServer((req, res) => {
         return;
       }
 
-      // 1) Sačuvaj na serveru (da preživi device sleep)
       const cfg = setHibConfig(deviceId, keepAwake, wakeSec);
-
-      // 2) Ako je device online, odmah pošalji
       const pushed = sendHibConfigToDevice(deviceId);
 
       res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
       res.end(JSON.stringify({ ok: true, stored: cfg, pushed }));
     });
-    // ===== ADMIN API: GET /api/hib_get?deviceId=...&token=...
-  if (u.pathname === "/api/hib_get" && req.method === "GET") {
+    return;
+  }
+
+  // POST /api/wifi_set
+  if (u.pathname === "/api/wifi_set" && req.method === "POST") {
     const deviceId = (u.searchParams.get("deviceId") || "").trim();
     const token = (u.searchParams.get("token") || "").trim();
 
@@ -630,98 +571,57 @@ const server = http.createServer((req, res) => {
       return;
     }
 
-    const cfg = getHibConfig(deviceId);
-    const online = !!producerByDevice.get(deviceId) && producerByDevice.get(deviceId).readyState === WebSocket.OPEN;
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      let payload;
+      try { payload = JSON.parse(body || "{}"); }
+      catch {
+        res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ ok: false, error: "bad_json" }));
+        return;
+      }
 
-    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-    res.end(JSON.stringify({ ok: true, deviceId, online, cfg }));
+      const ssid = String(payload.ssid || "").trim();
+      const pass = String(payload.pass || "").trim();
+      const apply = payload.apply !== false;
+
+      if (!ssid || !pass) {
+        res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ ok: false, error: "missing_ssid_or_pass" }));
+        return;
+      }
+
+      const producer = producerByDevice.get(deviceId);
+      if (!producer || producer.readyState !== WebSocket.OPEN) {
+        res.writeHead(409, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ ok: false, error: "device_not_connected" }));
+        return;
+      }
+
+      const msg = { type: "wifi_set", ssid, pass, apply: !!apply };
+
+      try {
+        producer.send(JSON.stringify(msg));
+        res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ ok: true, pushed: true }));
+      } catch {
+        res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ ok: false, error: "send_failed" }));
+      }
+    });
     return;
   }
 
-    return;
-  }
-
-  // default: HTML UI
+  // HTML UI
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
   res.end(htmlPage);
 });
 
-
 const PORT = process.env.PORT || 10000;
 const wss = new WebSocket.Server({ noServer: true });
 
-// Mape: deviceId -> set listeners
-const listenersByDevice = new Map();
-// deviceId -> ws (producer)
-const producerByDevice = new Map();
-
-// ===== HIB CONFIG (server memorija po uređaju) =====
-// Napomena: ovo je RAM-only (reset servera briše). Kasnije možemo u fajl / DB.
-const hibConfigByDevice = new Map();
-
-// Default vrednosti ako nikad nisi poslao config za taj deviceId
-function getDefaultHibConfig() {
-  return {
-    keep_awake: 0,
-    wake_interval_sec: 600
-  };
-}
-
-function getHibConfig(deviceId) {
-  return hibConfigByDevice.get(deviceId) || getDefaultHibConfig();
-}
-
-function setHibConfig(deviceId, keepAwake, wakeIntervalSec) {
-  const cfg = {
-    keep_awake: keepAwake ? 1 : 0,
-    wake_interval_sec: Math.max(10, Number(wakeIntervalSec) || 600),
-  };
-  hibConfigByDevice.set(deviceId, cfg);
-  return cfg;
-}
-
-// Poruka koju ESP32 očekuje (ws_take_hib_config_update)
-function sendHibConfigToDevice(deviceId) {
-  const producer = producerByDevice.get(deviceId);
-  if (!producer || producer.readyState !== WebSocket.OPEN) return false;
-
-  const cfg = getHibConfig(deviceId);
-  const msg = {
-    type: "config",
-    keep_awake: cfg.keep_awake,
-    wake_interval_sec: cfg.wake_interval_sec
-  };
-
-  try {
-    producer.send(JSON.stringify(msg));
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function addListener(deviceId, ws) {
-  if (!listenersByDevice.has(deviceId)) listenersByDevice.set(deviceId, new Set());
-  listenersByDevice.get(deviceId).add(ws);
-}
-
-function removeListener(deviceId, ws) {
-  const set = listenersByDevice.get(deviceId);
-  if (!set) return;
-  set.delete(ws);
-  if (set.size === 0) listenersByDevice.delete(deviceId);
-}
-
-function closeOldProducer(deviceId, newWs) {
-  const old = producerByDevice.get(deviceId);
-  if (old && old !== newWs) {
-    try { old.close(); } catch {}
-  }
-  producerByDevice.set(deviceId, newWs);
-}
-
 server.on("upgrade", (req, socket, head) => {
-  // Parse URL da vidimo da li je /ws/device ili /ws/listen
   const u = new URL(req.url, "http://localhost");
   const pathname = u.pathname;
 
@@ -746,56 +646,52 @@ server.on("upgrade", (req, socket, head) => {
   });
 });
 
-wss.on("connection", (ws, req) => {
+wss.on("connection", (ws) => {
   const role = ws._role;
   const deviceId = ws._deviceId;
 
   console.log(`WS connect: role=${role}, deviceId=${deviceId}`);
 
   if (role === "device") {
-    // jedan producer po deviceId
     closeOldProducer(deviceId, ws);
 
-    ws.send("ACK");   //dodata potvrda konekcije
+    // minimal ACK
+    try { ws.send("ACK"); } catch {}
 
-    // Pošalji poslednju HIB konfiguraciju čim se uređaj javi (da ne ode u sleep zbog "No CONFIG")
-    // Mali delay da damo vremena da se WS potpuno stabilizuje kroz proxy.
+    // push config odmah po connect
     setTimeout(() => {
       const ok = sendHibConfigToDevice(deviceId);
       console.log(`[HIB] push on connect deviceId=${deviceId} ok=${ok ? 1 : 0} cfg=`, getHibConfig(deviceId));
     }, 300);
 
-ws.on("message", (data, isBinary) => {
-  // 1) Tekstualne poruke od ESP (ACK, status, itd.)
-  if (!isBinary) {
-    const text = data.toString();
-    // očekujemo npr: {"type":"wifi_set_ack","ok":true,"ssid":"..."}
-    try {
-      const msg = JSON.parse(text);
-      if (msg && msg.type === "wifi_set_ack") {
-        console.log(`[WIFI] ACK from ${deviceId}: ok=${msg.ok} ssid=${msg.ssid || ""}`);
-      } else {
-        console.log(`[DEVICE ${deviceId}] text:`, text);
+    ws.on("message", (data, isBinary) => {
+      if (!isBinary) {
+        const text = data.toString();
+        try {
+          const msg = JSON.parse(text);
+          if (msg && msg.type === "wifi_set_ack") {
+            console.log(`[WIFI] ACK from ${deviceId}: ok=${msg.ok} ssid=${msg.ssid || ""}`);
+          } else {
+            console.log(`[DEVICE ${deviceId}] text:`, text);
+          }
+        } catch {
+          console.log(`[DEVICE ${deviceId}] text:`, text);
+        }
+        return;
       }
-    } catch {
-      console.log(`[DEVICE ${deviceId}] text:`, text);
-    }
-    return;
-  }
 
-  // 2) Binarni audio (kao do sada)
-  if (data.length !== 320) return;
+      // binary audio 320B
+      if (data.length !== 320) return;
 
-  const listeners = listenersByDevice.get(deviceId);
-  if (!listeners) return;
+      const listeners = listenersByDevice.get(deviceId);
+      if (!listeners) return;
 
-  for (const client of listeners) {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(data, { binary: true });
-    }
-  }
-});
-
+      for (const client of listeners) {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(data, { binary: true });
+        }
+      }
+    });
 
     ws.on("close", () => {
       console.log(`device closed: ${deviceId}`);
@@ -803,9 +699,7 @@ ws.on("message", (data, isBinary) => {
     });
 
   } else {
-    // listener
     addListener(deviceId, ws);
-
     ws.on("close", () => {
       console.log(`listener closed: ${deviceId}`);
       removeListener(deviceId, ws);
@@ -817,11 +711,10 @@ ws.on("message", (data, isBinary) => {
   });
 });
 
+// keepalive ping
 setInterval(() => {
   wss.clients.forEach((ws) => {
     if (ws.readyState !== WebSocket.OPEN) return;
-
-    // "ws" library: ping to keep NAT/proxy alive
     try { ws.ping(); } catch {}
   });
 }, 15000);
