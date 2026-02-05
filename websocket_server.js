@@ -593,9 +593,175 @@ const htmlPage = `<!DOCTYPE html>
 </body>
 </html>`;
 
+const playerPage = `<!DOCTYPE html>
+<html lang="sr">
+<head>
+  <meta charset="UTF-8" />
+  <title>ESP32 Audio Player</title>
+  <style>
+    body { font-family: system-ui, Arial; background:#0b1220; color:#e8eefc; margin:0; padding:24px; }
+    .card { max-width:760px; margin:0 auto; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.12);
+            border-radius:14px; padding:16px; }
+    input { width:100%; padding:10px 12px; border-radius:10px; border:1px solid rgba(255,255,255,0.14);
+            background:rgba(0,0,0,0.18); color:#e8eefc; margin-top:6px; }
+    label { display:block; margin-top:10px; color:rgba(232,238,252,0.75); font-size:12px; }
+    button { margin-top:12px; padding:10px 12px; border-radius:10px; border:1px solid rgba(255,255,255,0.16);
+             background:rgba(106,167,255,0.22); color:#e8eefc; cursor:pointer; }
+    .log { margin-top:12px; padding:10px 12px; border-radius:10px; border:1px solid rgba(255,255,255,0.12);
+           background:rgba(0,0,0,0.15); white-space:pre-wrap; color:rgba(232,238,252,0.85); font-size:13px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Audio Player (PCM16LE 8kHz, 20ms frames)</h2>
+    <p>Morate kliknuti Start (zbog browser audio policy).</p>
+
+    <label>deviceId</label>
+    <input id="devId" placeholder="dev001" />
+
+    <label>token</label>
+    <input id="token" type="password" placeholder="token" />
+
+    <button id="btn">Start listening</button>
+    <button id="stop">Stop</button>
+
+    <div id="log" class="log">Idle.</div>
+  </div>
+
+<script>
+  const devId = document.getElementById('devId');
+  const token = document.getElementById('token');
+  const btn = document.getElementById('btn');
+  const stopBtn = document.getElementById('stop');
+  const log = document.getElementById('log');
+
+  function setLog(s){ log.textContent = s; }
+
+  // Restore last
+  try {
+    devId.value = localStorage.getItem("p_devId") || "";
+    token.value = localStorage.getItem("p_token") || "";
+  } catch {}
+
+  let ws = null;
+  let ctx = null;
+  let queue = [];
+  let playing = false;
+
+  const SAMPLE_RATE = 8000;
+  const FRAME_SAMPLES = 160; // 20ms
+  const FRAME_BYTES = 320;
+
+  function pcm16ToFloat32(buf) {
+    const view = new DataView(buf);
+    const out = new Float32Array(FRAME_SAMPLES);
+    for (let i=0;i<FRAME_SAMPLES;i++){
+      const v = view.getInt16(i*2, true); // little-endian
+      out[i] = v / 32768;
+    }
+    return out;
+  }
+
+  async function ensureAudio() {
+    if (!ctx) {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    if (ctx.state !== "running") await ctx.resume();
+  }
+
+  function schedulePlay() {
+    if (!ctx || playing) return;
+    if (queue.length < 3) return; // mali buffer da izbegnemo krckanje
+
+    playing = true;
+
+    const tick = () => {
+      if (!ctx) { playing = false; return; }
+      if (queue.length === 0) { playing = false; return; }
+
+      // Spoji n frame-ova u jedan buffer da smanjimo overhead
+      const framesToTake = Math.min(queue.length, 10);
+      const totalSamples = framesToTake * FRAME_SAMPLES;
+
+      const audioBuf = ctx.createBuffer(1, totalSamples, SAMPLE_RATE);
+      const ch = audioBuf.getChannelData(0);
+
+      for (let f=0; f<framesToTake; f++){
+        const frame = queue.shift();
+        ch.set(frame, f*FRAME_SAMPLES);
+      }
+
+      const src = ctx.createBufferSource();
+      src.buffer = audioBuf;
+      src.connect(ctx.destination);
+      src.start();
+
+      src.onended = () => {
+        // nastavi
+        setTimeout(tick, 0);
+      };
+    };
+
+    tick();
+  }
+
+  btn.onclick = async () => {
+    const d = devId.value.trim();
+    const t = token.value.trim();
+    if (!d || !t) { setLog("Unesi deviceId + token."); return; }
+
+    try {
+      localStorage.setItem("p_devId", d);
+      localStorage.setItem("p_token", t);
+    } catch {}
+
+    await ensureAudio();
+
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const url = \`\${proto}://\${location.host}/ws/listen?deviceId=\${encodeURIComponent(d)}&token=\${encodeURIComponent(t)}\`;
+
+    ws = new WebSocket(url);
+    ws.binaryType = "arraybuffer";
+
+    ws.onopen = () => setLog("WS listen connected. Waiting audio...");
+    ws.onclose = () => setLog("WS closed.");
+    ws.onerror = (e) => setLog("WS error: " + (e.message || e));
+
+    ws.onmessage = (ev) => {
+      if (!(ev.data instanceof ArrayBuffer)) return;
+      const ab = ev.data;
+      if (ab.byteLength !== FRAME_BYTES) return;
+
+      queue.push(pcm16ToFloat32(ab));
+
+      // limit queue
+      if (queue.length > 200) queue.splice(0, queue.length - 200);
+
+      schedulePlay();
+    };
+  };
+
+  stopBtn.onclick = () => {
+    try { if (ws) ws.close(); } catch {}
+    ws = null;
+    queue = [];
+    playing = false;
+    if (ctx) { try { ctx.suspend(); } catch {} }
+    setLog("Stopped.");
+  };
+</script>
+</body>
+</html>`;
+
 // ===== HTTP server: HTML + admin API =====
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, "http://localhost");
+
+  if (u.pathname === "/player" && req.method === "GET") {
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(playerPage);
+    return;
+  }
 
   // GET /api/params_get
   if (u.pathname === "/api/params_get" && req.method === "GET") {
