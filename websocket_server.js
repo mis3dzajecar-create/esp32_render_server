@@ -963,17 +963,18 @@ wss.on("connection", (ws) => {
           if (msg && msg.type === "status") {
             lastStatusByDevice.set(deviceId, msg);
 
-            // server može ažurirati server_time_epoch po status-u (opciono, v2: držimo ga stabilnim dok user ne sync)
-            // ali možemo i osvežavati uvek:
-            // const p = getParams(deviceId); p.server_time_epoch = nowEpochSec(); paramsByDevice.set(deviceId,p);
-
-            // uvek vrati params (najbitnije za M1/M5)
+            // AUTO RTC SYNC: uvek osveži server_time_epoch
+            const p = getParams(deviceId);
+            p.server_time_epoch = Math.floor(Date.now() / 1000);
+            paramsByDevice.set(deviceId, p);
+            
             pushParamsToDevice(deviceId);
             return;
           }
 
+
           console.log(`[DEVICE ${deviceId}] text:`, msg);
-        } catch {
+        } catch (err) {
           console.log(`[DEVICE ${deviceId}] text:`, text);
         }
         return;
