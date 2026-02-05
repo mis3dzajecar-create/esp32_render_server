@@ -637,7 +637,6 @@ const playerPage = `<!DOCTYPE html>
 
   function setLog(s){ log.textContent = s; }
 
-  // Restore last
   try {
     devId.value = localStorage.getItem("p_devId") || "";
     token.value = localStorage.getItem("p_token") || "";
@@ -645,64 +644,70 @@ const playerPage = `<!DOCTYPE html>
 
   let ws = null;
   let ctx = null;
-  let queue = [];
-  let playing = false;
+  let nextPlayTime = 0;
 
-  const SAMPLE_RATE = 8000;
-  const FRAME_SAMPLES = 160; // 20ms
+  const IN_SR = 8000;
+  const FRAME_SAMPLES = 160;
   const FRAME_BYTES = 320;
 
-  function pcm16ToFloat32(buf) {
-    const view = new DataView(buf);
+  async function ensureAudio() {
+    if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (ctx.state !== "running") await ctx.resume();
+    if (nextPlayTime < ctx.currentTime) nextPlayTime = ctx.currentTime + 0.05; // mali lead
+  }
+
+  function pcm16leToFloat32(ab) {
+    const view = new DataView(ab);
     const out = new Float32Array(FRAME_SAMPLES);
-    for (let i=0;i<FRAME_SAMPLES;i++){
-      const v = view.getInt16(i*2, true); // little-endian
+    for (let i=0; i<FRAME_SAMPLES; i++) {
+      const v = view.getInt16(i*2, true);
       out[i] = v / 32768;
     }
     return out;
   }
 
-  async function ensureAudio() {
-    if (!ctx) {
-      ctx = new (window.AudioContext || window.webkitAudioContext)();
+  // Linear upsample (8k -> ctx.sampleRate)
+  function resampleLinear(inFloats, inRate, outRate) {
+    if (inRate === outRate) return inFloats;
+
+    const ratio = outRate / inRate;
+    const outLen = Math.max(1, Math.round(inFloats.length * ratio));
+    const out = new Float32Array(outLen);
+
+    for (let i=0; i<outLen; i++) {
+      const srcPos = i / ratio;
+      const i0 = Math.floor(srcPos);
+      const i1 = Math.min(i0 + 1, inFloats.length - 1);
+      const t = srcPos - i0;
+      out[i] = inFloats[i0] * (1 - t) + inFloats[i1] * t;
     }
-    if (ctx.state !== "running") await ctx.resume();
+    return out;
   }
 
-  function schedulePlay() {
-    if (!ctx || playing) return;
-    if (queue.length < 3) return; // mali buffer da izbegnemo krckanje
+  function scheduleChunk(floatData) {
+    if (!ctx) return;
 
-    playing = true;
+    // resample na output sampleRate
+    const out = resampleLinear(floatData, IN_SR, ctx.sampleRate);
 
-    const tick = () => {
-      if (!ctx) { playing = false; return; }
-      if (queue.length === 0) { playing = false; return; }
+    const buf = ctx.createBuffer(1, out.length, ctx.sampleRate);
+    buf.getChannelData(0).set(out);
 
-      // Spoji n frame-ova u jedan buffer da smanjimo overhead
-      const framesToTake = Math.min(queue.length, 10);
-      const totalSamples = framesToTake * FRAME_SAMPLES;
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(ctx.destination);
 
-      const audioBuf = ctx.createBuffer(1, totalSamples, SAMPLE_RATE);
-      const ch = audioBuf.getChannelData(0);
+    const now = ctx.currentTime;
+    if (nextPlayTime < now + 0.02) nextPlayTime = now + 0.02;
 
-      for (let f=0; f<framesToTake; f++){
-        const frame = queue.shift();
-        ch.set(frame, f*FRAME_SAMPLES);
-      }
+    src.start(nextPlayTime);
+    nextPlayTime += out.length / ctx.sampleRate;
+  }
 
-      const src = ctx.createBufferSource();
-      src.buffer = audioBuf;
-      src.connect(ctx.destination);
-      src.start();
-
-      src.onended = () => {
-        // nastavi
-        setTimeout(tick, 0);
-      };
-    };
-
-    tick();
+  async function toArrayBuffer(data) {
+    if (data instanceof ArrayBuffer) return data;
+    if (data instanceof Blob) return await data.arrayBuffer();
+    return null;
   }
 
   btn.onclick = async () => {
@@ -718,34 +723,35 @@ const playerPage = `<!DOCTYPE html>
     await ensureAudio();
 
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    const url = \`\${proto}://\${location.host}/ws/listen?deviceId=\${encodeURIComponent(d)}&token=\${encodeURIComponent(t)}\`;
+    const url = proto + "://" + location.host + "/ws/listen?deviceId=" +
+                encodeURIComponent(d) + "&token=" + encodeURIComponent(t);
 
     ws = new WebSocket(url);
-    ws.binaryType = "arraybuffer";
+    ws.binaryType = "arraybuffer"; // i dalje ostavi
 
     ws.onopen = () => setLog("WS listen connected. Waiting audio...");
     ws.onclose = () => setLog("WS closed.");
-    ws.onerror = (e) => setLog("WS error: " + (e.message || e));
+    ws.onerror = () => setLog("WS error.");
 
-    ws.onmessage = (ev) => {
-      if (!(ev.data instanceof ArrayBuffer)) return;
-      const ab = ev.data;
+    ws.onmessage = async (ev) => {
+      const ab = await toArrayBuffer(ev.data);
+      if (!ab) return;
       if (ab.byteLength !== FRAME_BYTES) return;
+      setLog("Receiving 320B frames... t=" + new Date().toLocaleTimeString());
 
-      queue.push(pcm16ToFloat32(ab));
 
-      // limit queue
-      if (queue.length > 200) queue.splice(0, queue.length - 200);
+      // osiguraj da je audio context živ (ponekad suspenduje)
+      if (ctx && ctx.state !== "running") { try { await ctx.resume(); } catch {} }
 
-      schedulePlay();
+      const f = pcm16leToFloat32(ab);
+      scheduleChunk(f);
     };
   };
 
   stopBtn.onclick = () => {
     try { if (ws) ws.close(); } catch {}
     ws = null;
-    queue = [];
-    playing = false;
+    nextPlayTime = 0;
     if (ctx) { try { ctx.suspend(); } catch {} }
     setLog("Stopped.");
   };
