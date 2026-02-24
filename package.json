@@ -1,10 +1,10 @@
 {
   "name": "esp32-video-ws-relay",
   "version": "0.2.0",
-  "main": "server.js",
+  "main": "esp32-video-relay.js",
   "type": "commonjs",
   "scripts": {
-    "start": "node server.js"
+    "start": "node esp32-video-relay.js"
   },
   "dependencies": {
     "express": "^4.19.2",
