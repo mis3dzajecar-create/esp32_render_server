@@ -19,8 +19,8 @@ const VIEWER_LIMIT = 5;
 // Opcija 1 (preporuka za start): comma-separated
 // DEVICE_TOKENS="cam001:DEV_TOKEN_1,cam002:DEV_TOKEN_2"
 // VIEWER_TOKENS="VIEW1,VIEW2,VIEW3" (ili samo jedan token koji deliš ti)
-const DEVICE_TOKENS_RAW = process.env.DEVICE_TOKENS || "";
-const VIEWER_TOKENS_RAW = process.env.VIEWER_TOKENS || "";
+const DEVICE_TOKENS_RAW = process.env.DEVICE_TOKENS || "cam001:token1";
+const VIEWER_TOKENS_RAW = process.env.VIEWER_TOKENS || "gledalac1";
 
 // Parsiranje "cam001:token,cam002:token"
 function parseDeviceTokens(raw) {
@@ -119,6 +119,12 @@ app.get("/health", (req, res) => {
       return acc;
     }, {})
   });
+});
+
+const path = require("path");
+
+app.get("/view", (req, res) => {
+  res.sendFile(path.join(__dirname, "viewer.html"));
 });
 
 const server = http.createServer(app);
