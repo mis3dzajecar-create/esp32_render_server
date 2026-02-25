@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="sr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ESP32 Video Viewer</title>
+  <style>
+    body { font-family: system-ui, Arial; margin: 16px; }
+    #img { max-width: 100%; border: 1px solid #ccc; border-radius: 10px; }
+    .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 12px 0; }
+    input { padding: 8px; min-width: 260px; }
+    button { padding: 8px 12px; cursor: pointer; }
+    #status { padding: 6px 10px; border-radius: 999px; border: 1px solid #ccc; }
+    small { color: #666; }
+  </style>
+</head>
+<body>
+  <h2>ESP32 Video Viewer</h2>
+
+  <div class="row">
+    <span id="status">DISCONNECTED</span>
+    <label>deviceId: <input id="deviceId" value="cam001" /></label>
+    <label>token: <input id="token" placeholder="VIEWER_TOKEN" /></label>
+    <button id="btnConnect">Connect</button>
+    <button id="btnHq" disabled>HQ Snapshot</button>
+  </div>
+
+  <small>
+    Otvori u više tabova/uređaja da testiraš limit 5. Šesti treba da dobije LIMIT_REACHED.
+  </small>
+
+  <div style="margin-top:12px;">
+    <img id="img" alt="video" />
+  </div>
+
+  <script>
+    let ws = null;
+    let lastUrl = null;
+
+    function setStatus(txt) {
+      document.getElementById("status").textContent = txt;
+    }
+
+    function connect() {
+      const deviceId = document.getElementById("deviceId").value.trim();
+      const token = document.getElementById("token").value.trim();
+      if (!deviceId || !token) {
+        alert("Unesi deviceId i token.");
+        return;
+      }
+
+      const proto = (location.protocol === "https:") ? "wss" : "ws";
+      const wsUrl = `${proto}://${location.host}/ws/view?deviceId=${encodeURIComponent(deviceId)}&token=${encodeURIComponent(token)}`;
+
+      ws = new WebSocket(wsUrl);
+      ws.binaryType = "arraybuffer";
+
+      ws.onopen = () => {
+        setStatus("CONNECTED");
+        document.getElementById("btnHq").disabled = false;
+      };
+
+      ws.onclose = () => {
+        setStatus("DISCONNECTED");
+        document.getElementById("btnHq").disabled = true;
+        ws = null;
+      };
+
+      ws.onerror = () => setStatus("ERROR");
+
+      ws.onmessage = (ev) => {
+        if (typeof ev.data === "string") {
+          try {
+            const msg = JSON.parse(ev.data);
+            if (msg?.type === "ERROR") alert(`Server error: ${msg.reason}`);
+          } catch {}
+          return;
+        }
+
+        const blob = new Blob([ev.data], { type: "image/jpeg" });
+        const url = URL.createObjectURL(blob);
+
+        document.getElementById("img").src = url;
+
+        if (lastUrl) URL.revokeObjectURL(lastUrl);
+        lastUrl = url;
+      };
+    }
+
+    document.getElementById("btnConnect").onclick = connect;
+
+    document.getElementById("btnHq").onclick = () => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      const deviceId = document.getElementById("deviceId").value.trim();
+      ws.send(JSON.stringify({ type: "REQ_HQ_SNAPSHOT", deviceId }));
+    };
+  </script>
+</body>
+</html>
