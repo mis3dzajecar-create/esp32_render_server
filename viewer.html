@@ -37,6 +37,9 @@
     let ws = null;
     let lastUrl = null;
 
+    // kada je true -> sledeći frame će se sačuvati kao fajl
+    let wantDownloadNextFrame = false;
+
     function setStatus(txt) {
       document.getElementById("status").textContent = txt;
     }
@@ -84,6 +87,21 @@
 
         if (lastUrl) URL.revokeObjectURL(lastUrl);
         lastUrl = url;
+
+        // ===== DOWNLOAD NEXT FRAME =====
+        if (wantDownloadNextFrame) {
+          wantDownloadNextFrame = false;
+
+          const a = document.createElement("a");
+          const ts = new Date().toISOString().replace(/[:.]/g, "-");
+
+          a.href = url;
+          a.download = `${deviceId}_${ts}.jpg`; // koristi deviceId iz inputa
+
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+        }
       };
     }
 
@@ -91,6 +109,10 @@
 
     document.getElementById("btnHq").onclick = () => {
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+      // sledeći frame će biti download
+      wantDownloadNextFrame = true;
+
       const deviceId = document.getElementById("deviceId").value.trim();
       ws.send(JSON.stringify({ type: "REQ_HQ_SNAPSHOT", deviceId }));
     };
