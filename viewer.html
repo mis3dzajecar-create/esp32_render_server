@@ -6,7 +6,13 @@
   <title>ESP32 Video Viewer</title>
   <style>
     body { font-family: system-ui, Arial; margin: 16px; }
-    #img { max-width: 100%; border: 1px solid #ccc; border-radius: 10px; }
+    #img {
+        max-height: 90vh;
+        border: 1px solid #ccc;
+        border-radius: 10px;
+
+        transform: rotate(-90deg);
+    }
     .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 12px 0; }
     input { padding: 8px; min-width: 260px; }
     button { padding: 8px 12px; cursor: pointer; }
