@@ -51,25 +51,65 @@
     }
 
     function connect() {
-  const deviceId = document.getElementById("deviceId").value.trim();
-  const token = document.getElementById("token").value.trim();
+      const deviceId = document.getElementById("deviceId").value.trim();
+      const token = document.getElementById("token").value.trim();
+      if (!deviceId || !token) {
+        alert("Unesi deviceId i token.");
+        return;
+      }
 
-  if (!deviceId || !token) {
-    alert("Unesi deviceId i token.");
-    return;
-  }
+      const proto = (location.protocol === "https:") ? "wss" : "ws";
+      const wsUrl = `${proto}://${location.host}/ws/view?deviceId=${encodeURIComponent(deviceId)}&token=${encodeURIComponent(token)}`;
 
-  const img = document.getElementById("img");
+      ws = new WebSocket(wsUrl);
+      ws.binaryType = "arraybuffer";
 
-  const proto = (location.protocol === "https:") ? "https" : "http";
+      ws.onopen = () => {
+        setStatus("CONNECTED");
+        document.getElementById("btnHq").disabled = false;
+      };
 
-  const streamUrl =
-    `${proto}://${location.host}/stream?deviceId=${encodeURIComponent(deviceId)}&token=${encodeURIComponent(token)}`;
+      ws.onclose = () => {
+        setStatus("DISCONNECTED");
+        document.getElementById("btnHq").disabled = true;
+        ws = null;
+      };
 
-  img.src = streamUrl;
+      ws.onerror = () => setStatus("ERROR");
 
-  setStatus("STREAMING");
-}
+      ws.onmessage = (ev) => {
+        if (typeof ev.data === "string") {
+          try {
+            const msg = JSON.parse(ev.data);
+            if (msg?.type === "ERROR") alert(`Server error: ${msg.reason}`);
+          } catch {}
+          return;
+        }
+
+        const blob = new Blob([ev.data], { type: "image/jpeg" });
+        const url = URL.createObjectURL(blob);
+
+        document.getElementById("img").src = url;
+
+        if (lastUrl) URL.revokeObjectURL(lastUrl);
+        lastUrl = url;
+
+        // ===== DOWNLOAD NEXT FRAME =====
+        if (wantDownloadNextFrame) {
+          wantDownloadNextFrame = false;
+
+          const a = document.createElement("a");
+          const ts = new Date().toISOString().replace(/[:.]/g, "-");
+
+          a.href = url;
+          a.download = `${deviceId}_${ts}.jpg`; // koristi deviceId iz inputa
+
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+        }
+      };
+    }
 
     document.getElementById("btnConnect").onclick = connect;
 
