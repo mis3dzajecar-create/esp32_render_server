@@ -5,56 +5,182 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>ESP32 Video Viewer</title>
   <style>
-    body { font-family: system-ui, Arial; margin: 16px; }
-    #img {
-        max-height: 90vh;
-        border: 1px solid #ccc;
-        border-radius: 10px;
-
-        transform: rotate(-90deg);
+    * { box-sizing: border-box; }
+    body { 
+      font-family: 'Segoe UI', system-ui, -apple-system, Arial, sans-serif; 
+      margin: 0; 
+      padding: 20px; 
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
     }
-    .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 12px 0; }
-    input { padding: 8px; min-width: 260px; }
-    button { padding: 8px 12px; cursor: pointer; }
-    #status { padding: 6px 10px; border-radius: 999px; border: 1px solid #ccc; }
-    small { color: #666; }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      background: rgba(255,255,255,0.95);
+      border-radius: 20px;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+      padding: 30px;
+      backdrop-filter: blur(10px);
+    }
+    h2 {
+      text-align: center;
+      color: #333;
+      margin-bottom: 30px;
+      font-size: 2em;
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .controls {
+      display: flex; 
+      gap: 15px; 
+      align-items: center; 
+      flex-wrap: wrap; 
+      margin: 20px 0; 
+      padding: 20px;
+      background: rgba(255,255,255,0.7);
+      border-radius: 15px;
+      box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+    }
+    .status {
+      padding: 10px 20px;
+      border-radius: 25px;
+      font-weight: bold;
+      font-size: 0.9em;
+      min-width: 120px;
+      text-align: center;
+    }
+    .status.connected { background: #d4edda; color: #155724; border: 2px solid #c3e6cb; }
+    .status.disconnected { background: #f8d7da; color: #721c24; border: 2px solid #f5c6cb; }
+    .status.error { background: #fff3cd; color: #856404; border: 2px solid #ffeaa7; }
+    label {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      font-weight: 500;
+      color: #555;
+    }
+    input { 
+      padding: 12px 15px; 
+      border: 2px solid #e1e5e9;
+      border-radius: 10px;
+      font-size: 16px;
+      transition: all 0.3s ease;
+      min-width: 200px;
+    }
+    input:focus {
+      outline: none;
+      border-color: #667eea;
+      box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+    }
+    button { 
+      padding: 12px 24px; 
+      border: none;
+      border-radius: 12px;
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 16px;
+      transition: all 0.3s ease;
+      min-width: 120px;
+    }
+    #btnConnect {
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      color: white;
+      box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+    }
+    #btnConnect:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 8px 25px rgba(102, 126, 234, 0.5); }
+    #btnHq {
+      background: linear-gradient(135deg, #28a745, #20c997);
+      color: white;
+      box-shadow: 0 4px 15px rgba(40, 167, 69, 0.4);
+    }
+    #btnHq:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 8px 25px rgba(40, 167, 69, 0.5); }
+    #btnHq:disabled {
+      background: #6c757d;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+    .instructions {
+      background: rgba(255,255,255,0.8);
+      padding: 20px;
+      border-radius: 15px;
+      margin: 20px 0;
+      border-left: 5px solid #667eea;
+      color: #555;
+      font-size: 0.95em;
+      line-height: 1.6;
+    }
+    .video-section {
+      margin-top: 30px;
+      text-align: center;
+      padding: 30px;
+      background: rgba(255,255,255,0.6);
+      border-radius: 20px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+    }
+    #img {
+      max-height: 70vh;
+      max-width: 100%;
+      width: auto;
+      height: auto;
+      border: 3px solid #e9ecef;
+      border-radius: 15px;
+      box-shadow: 0 15px 35px rgba(0,0,0,0.2);
+      transform: rotate(-90deg);
+      transition: all 0.3s ease;
+    }
+    #img:hover {
+      box-shadow: 0 20px 45px rgba(0,0,0,0.3);
+      transform: rotate(-90deg) scale(1.02);
+    }
+    @media (max-width: 768px) {
+      .container { padding: 20px; margin: 10px; }
+      .controls { flex-direction: column; align-items: stretch; }
+      input { min-width: auto; }
+      h2 { font-size: 1.5em; }
+      #img { max-height: 50vh; }
+    }
   </style>
 </head>
 <body>
-  <h2>ESP32 Video Viewer</h2>
+  <div class="container">
+    <h2>📹 ESP32 Video Viewer</h2>
 
-  <div class="row">
-    <span id="status">DISCONNECTED</span>
-    <label>deviceId: <input id="deviceId" value="cam001" /></label>
-    <label>token: <input id="token" placeholder="VIEWER_TOKEN" /></label>
-    <button id="btnConnect">Connect</button>
-    <button id="btnHq" disabled>HQ Snapshot</button>
-  </div>
+    <div class="controls">
+      <span id="status" class="status disconnected">DISCONNECTED</span>
+      <label>Device ID: <input id="deviceId" value="cam001" /></label>
+      <label>Token: <input id="token" placeholder="VIEWER_TOKEN" /></label>
+      <button id="btnConnect">🔗 Connect</button>
+      <button id="btnHq" disabled>📸 SLIKAJ</button>
+    </div>
 
-  <small>
-    Otvori u više tabova/uređaja da testiraš limit 5. Šesti treba da dobije LIMIT_REACHED.
-  </small>
+    <div class="instructions">
+      Unesi <strong>Device ID</strong> i <strong>token</strong>. Klikni na <strong>Connect</strong> da se povežeš sa kamerom. 
+      Preuzmi visokokvalitetnu sliku klikom na <strong>📸 SLIKAJ</strong>.
+    </div>
 
-  <div style="margin-top:12px;">
-    <img id="img" alt="video" />
+    <div class="video-section">
+      <img id="img" alt="Live video stream" />
+    </div>
   </div>
 
   <script>
     let ws = null;
     let lastUrl = null;
-
-    // kada je true -> sledeći frame će se sačuvati kao fajl
     let wantDownloadNextFrame = false;
 
-    function setStatus(txt) {
-      document.getElementById("status").textContent = txt;
+    function setStatus(txt, state) {
+      const statusEl = document.getElementById("status");
+      statusEl.textContent = txt;
+      statusEl.className = `status ${state}`;
     }
 
     function connect() {
       const deviceId = document.getElementById("deviceId").value.trim();
       const token = document.getElementById("token").value.trim();
       if (!deviceId || !token) {
-        alert("Unesi deviceId i token.");
+        alert("❌ Unesi Device ID i Token!");
         return;
       }
 
@@ -65,23 +191,23 @@
       ws.binaryType = "arraybuffer";
 
       ws.onopen = () => {
-        setStatus("CONNECTED");
+        setStatus("✅ CONNECTED", "connected");
         document.getElementById("btnHq").disabled = false;
       };
 
       ws.onclose = () => {
-        setStatus("DISCONNECTED");
+        setStatus("❌ DISCONNECTED", "disconnected");
         document.getElementById("btnHq").disabled = true;
         ws = null;
       };
 
-      ws.onerror = () => setStatus("ERROR");
+      ws.onerror = () => setStatus("⚠️ ERROR", "error");
 
       ws.onmessage = (ev) => {
         if (typeof ev.data === "string") {
           try {
             const msg = JSON.parse(ev.data);
-            if (msg?.type === "ERROR") alert(`Server error: ${msg.reason}`);
+            if (msg?.type === "ERROR") alert(`❌ Server error: ${msg.reason}`);
           } catch {}
           return;
         }
@@ -89,20 +215,22 @@
         const blob = new Blob([ev.data], { type: "image/jpeg" });
         const url = URL.createObjectURL(blob);
 
-        document.getElementById("img").src = url;
+        const img = document.getElementById("img");
+        img.src = url;
 
         if (lastUrl) URL.revokeObjectURL(lastUrl);
         lastUrl = url;
 
-        // ===== DOWNLOAD NEXT FRAME =====
+        // Download next frame
         if (wantDownloadNextFrame) {
           wantDownloadNextFrame = false;
 
           const a = document.createElement("a");
           const ts = new Date().toISOString().replace(/[:.]/g, "-");
+          const deviceId = document.getElementById("deviceId").value.trim();
 
           a.href = url;
-          a.download = `${deviceId}_${ts}.jpg`; // koristi deviceId iz inputa
+          a.download = `${deviceId}_${ts}.jpg`;
 
           document.body.appendChild(a);
           a.click();
@@ -114,11 +242,12 @@
     document.getElementById("btnConnect").onclick = connect;
 
     document.getElementById("btnHq").onclick = () => {
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        alert("❌ Nisi povezan!");
+        return;
+      }
 
-      // sledeći frame će biti download
       wantDownloadNextFrame = true;
-
       const deviceId = document.getElementById("deviceId").value.trim();
       ws.send(JSON.stringify({ type: "REQ_HQ_SNAPSHOT", deviceId }));
     };
