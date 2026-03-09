@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>ESP32 Video Viewer</title>
+  <title>TREĆE OKO</title>
   <style>
     * { box-sizing: border-box; }
     body { 
@@ -156,8 +156,8 @@
     </div>
 
     <div class="instructions">
-      Unesi <strong>Device ID</strong> i <strong>token</strong>. Klikni na <strong>Connect</strong> da se povežeš sa kamerom. 
-      Preuzmi visokokvalitetnu sliku klikom na <strong>📸 SLIKAJ</strong>.
+      Unesi <strong>Device ID</strong> i <strong>Token</strong>. Klikni na <strong>Connect</strong> da se povežeš sa kamerom. 
+      Preuzmi sliku klikom na <strong>📸 SLIKAJ</strong>.
     </div>
 
     <div class="video-section">
@@ -221,21 +221,41 @@
         if (lastUrl) URL.revokeObjectURL(lastUrl);
         lastUrl = url;
 
-        // Download next frame
-        if (wantDownloadNextFrame) {
-          wantDownloadNextFrame = false;
+// Download next frame
+if (wantDownloadNextFrame) {
+  wantDownloadNextFrame = false;
 
-          const a = document.createElement("a");
-          const ts = new Date().toISOString().replace(/[:.]/g, "-");
-          const deviceId = document.getElementById("deviceId").value.trim();
+  const img = document.getElementById("img");
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  
+  // Postavi dimenzije canvas-a prema rotiranoj slici
+  canvas.width = img.naturalHeight;
+  canvas.height = img.naturalWidth;
+  
+  // Rotiraj i nacrtaj sliku na canvas
+  ctx.translate(canvas.width / 2, canvas.height / 2);
+  ctx.rotate(-Math.PI / 2); // -90 stepeni
+  ctx.drawImage(img, -img.naturalWidth / 2, -img.naturalHeight / 2);
+  
+  // Kreiraj download link sa rotiranom slikom
+  canvas.toBlob((blob) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    const deviceId = document.getElementById("deviceId").value.trim();
 
-          a.href = url;
-          a.download = `${deviceId}_${ts}.jpg`;
+    a.href = url;
+    a.download = `${deviceId}_${ts}.jpg`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    
+    if (lastUrl) URL.revokeObjectURL(lastUrl);
+    lastUrl = url;
+  }, 'image/jpeg');
+}
 
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-        }
       };
     }
 
